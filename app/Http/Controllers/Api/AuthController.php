@@ -75,27 +75,26 @@ class AuthController extends Controller
             'expires_at' => now()->addMinutes(10),
         ]);
 
-        $mailSent = true;
-
-        try {
-            Mail::raw(
-                "Your ThreatIQ verification code is: {$code}\n\n"
-                . "This code will expire in 10 minutes.",
-                function ($message) use ($user) {
-                    $message
-                        ->to($user->email)
-                        ->subject('ThreatIQ - Email Verification Code');
-                }
-            );
-        } catch (\Throwable $e) {
-            report($e);
-            $mailSent = false;
-        }
+        // Send email after the HTTP response so signup never hangs on SMTP.
+        $mailError = null;
+        dispatch(function () use ($user, $code, &$mailError) {
+            try {
+                Mail::raw(
+                    "Your ThreatIQ verification code is: {$code}\n\n"
+                    . "This code will expire in 10 minutes.",
+                    function ($message) use ($user) {
+                        $message
+                            ->to($user->email)
+                            ->subject('ThreatIQ - Email Verification Code');
+                    }
+                );
+            } catch (\Throwable $e) {
+                report($e);
+            }
+        })->afterResponse();
 
         $payload = [
-            'message' => $mailSent
-                ? 'Account created. Verification code sent to your email.'
-                : 'Account created. Email delivery failed; use the on-screen verification code.',
+            'message' => 'Account created. Verification code sent to your email.',
             'user' => [
                 'id' => $user->id,
                 'name' => $user->name,
@@ -108,12 +107,10 @@ class AuthController extends Controller
             ],
         ];
 
-        // For demos / when SMTP is unavailable
-        if (
-            filter_var(env('SHOW_VERIFICATION_CODE', false), FILTER_VALIDATE_BOOLEAN)
-            || !$mailSent
-        ) {
+        // Always include code in API when enabled (Railway often blocks Gmail SMTP)
+        if (filter_var(env('SHOW_VERIFICATION_CODE', false), FILTER_VALIDATE_BOOLEAN)) {
             $payload['verification_code'] = $code;
+            $payload['message'] = 'Account created. Check your email, or use the on-screen verification code.';
         }
 
         return response()->json($payload, 201);
@@ -262,34 +259,29 @@ class AuthController extends Controller
             'expires_at' => now()->addMinutes(10),
         ]);
 
-        $mailSent = true;
-
-        try {
-            Mail::raw(
-                "Your ThreatIQ password reset code is: {$code}\n\n"
-                . "This code will expire in 10 minutes.",
-                function ($message) use ($user) {
-                    $message
-                        ->to($user->email)
-                        ->subject('ThreatIQ - Password Reset Code');
-                }
-            );
-        } catch (\Throwable $e) {
-            report($e);
-            $mailSent = false;
-        }
+        dispatch(function () use ($user, $code) {
+            try {
+                Mail::raw(
+                    "Your ThreatIQ password reset code is: {$code}\n\n"
+                    . "This code will expire in 10 minutes.",
+                    function ($message) use ($user) {
+                        $message
+                            ->to($user->email)
+                            ->subject('ThreatIQ - Password Reset Code');
+                    }
+                );
+            } catch (\Throwable $e) {
+                report($e);
+            }
+        })->afterResponse();
 
         $payload = [
-            'message' => $mailSent
-                ? 'Password reset code sent to your email.'
-                : 'Email delivery failed; use the on-screen reset code.',
+            'message' => 'Password reset code sent to your email.',
         ];
 
-        if (
-            filter_var(env('SHOW_VERIFICATION_CODE', false), FILTER_VALIDATE_BOOLEAN)
-            || !$mailSent
-        ) {
+        if (filter_var(env('SHOW_VERIFICATION_CODE', false), FILTER_VALIDATE_BOOLEAN)) {
             $payload['verification_code'] = $code;
+            $payload['message'] = 'Password reset code sent. Check your email, or use the on-screen code.';
         }
 
         return response()->json($payload);
