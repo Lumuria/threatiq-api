@@ -1,2 +1,8 @@
+[phases.setup]
+nixPkgs = ["...", "php83Extensions.pdo_mysql", "php83Extensions.gd"]
+
+[phases.install]
+cmds = ["composer install --no-dev --optimize-autoloader --no-interaction"]
+
 [start]
 cmd = "bash start.sh"
