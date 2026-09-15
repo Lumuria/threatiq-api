@@ -9,12 +9,35 @@ use App\Models\PasswordResetCode;
 use App\Models\PasswordHistory;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
 
 class AuthController extends Controller
 {
+    private function sendCodeEmailAsync(string $email, string $code, bool $reset = false): void
+    {
+        $php = PHP_BINARY ?: 'php';
+        $artisan = base_path('artisan');
+        $resetFlag = $reset ? ' --reset' : '';
+
+        $command = sprintf(
+            '%s %s verification:email %s %s%s > /dev/null 2>&1 &',
+            escapeshellarg($php),
+            escapeshellarg($artisan),
+            escapeshellarg($email),
+            escapeshellarg($code),
+            $resetFlag
+        );
+
+        if (strncasecmp(PHP_OS, 'WIN', 3) === 0) {
+            // Local Windows fallback (non-blocking best-effort)
+            pclose(popen('start /B '.$command, 'r'));
+            return;
+        }
+
+        exec($command);
+    }
+
     public function register(Request $request)
     {
         $validated = $request->validate([
@@ -75,26 +98,11 @@ class AuthController extends Controller
             'expires_at' => now()->addMinutes(10),
         ]);
 
-        // Send email after the HTTP response so signup never hangs on SMTP.
-        $mailError = null;
-        dispatch(function () use ($user, $code, &$mailError) {
-            try {
-                Mail::raw(
-                    "Your ThreatIQ verification code is: {$code}\n\n"
-                    . "This code will expire in 10 minutes.",
-                    function ($message) use ($user) {
-                        $message
-                            ->to($user->email)
-                            ->subject('ThreatIQ - Email Verification Code');
-                    }
-                );
-            } catch (\Throwable $e) {
-                report($e);
-            }
-        })->afterResponse();
+        // Fire-and-forget email so signup never waits on SMTP.
+        $this->sendCodeEmailAsync($user->email, $code);
 
         $payload = [
-            'message' => 'Account created. Verification code sent to your email.',
+            'message' => 'Account created. Check your email, or use the on-screen verification code.',
             'user' => [
                 'id' => $user->id,
                 'name' => $user->name,
@@ -107,10 +115,8 @@ class AuthController extends Controller
             ],
         ];
 
-        // Always include code in API when enabled (Railway often blocks Gmail SMTP)
         if (filter_var(env('SHOW_VERIFICATION_CODE', false), FILTER_VALIDATE_BOOLEAN)) {
             $payload['verification_code'] = $code;
-            $payload['message'] = 'Account created. Check your email, or use the on-screen verification code.';
         }
 
         return response()->json($payload, 201);
@@ -259,29 +265,14 @@ class AuthController extends Controller
             'expires_at' => now()->addMinutes(10),
         ]);
 
-        dispatch(function () use ($user, $code) {
-            try {
-                Mail::raw(
-                    "Your ThreatIQ password reset code is: {$code}\n\n"
-                    . "This code will expire in 10 minutes.",
-                    function ($message) use ($user) {
-                        $message
-                            ->to($user->email)
-                            ->subject('ThreatIQ - Password Reset Code');
-                    }
-                );
-            } catch (\Throwable $e) {
-                report($e);
-            }
-        })->afterResponse();
+        $this->sendCodeEmailAsync($user->email, $code, true);
 
         $payload = [
-            'message' => 'Password reset code sent to your email.',
+            'message' => 'Password reset code sent. Check your email, or use the on-screen code.',
         ];
 
         if (filter_var(env('SHOW_VERIFICATION_CODE', false), FILTER_VALIDATE_BOOLEAN)) {
             $payload['verification_code'] = $code;
-            $payload['message'] = 'Password reset code sent. Check your email, or use the on-screen code.';
         }
 
         return response()->json($payload);
