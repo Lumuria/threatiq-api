@@ -13,6 +13,7 @@ class DatabaseSeeder extends Seeder
             PreventionSeeder::class,
             AwarenessSeeder::class,
             NewsSeeder::class,
+            DemoUserSeeder::class,
         ]);
     }
 }

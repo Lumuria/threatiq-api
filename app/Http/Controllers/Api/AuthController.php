@@ -75,18 +75,27 @@ class AuthController extends Controller
             'expires_at' => now()->addMinutes(10),
         ]);
 
-        Mail::raw(
-            "Your ThreatIQ verification code is: {$code}\n\n"
-            . "This code will expire in 10 minutes.",
-            function ($message) use ($user) {
-                $message
-                    ->to($user->email)
-                    ->subject('ThreatIQ - Email Verification Code');
-            }
-        );
+        $mailSent = true;
 
-        return response()->json([
-            'message' => 'Account created. Verification code sent to your email.',
+        try {
+            Mail::raw(
+                "Your ThreatIQ verification code is: {$code}\n\n"
+                . "This code will expire in 10 minutes.",
+                function ($message) use ($user) {
+                    $message
+                        ->to($user->email)
+                        ->subject('ThreatIQ - Email Verification Code');
+                }
+            );
+        } catch (\Throwable $e) {
+            report($e);
+            $mailSent = false;
+        }
+
+        $payload = [
+            'message' => $mailSent
+                ? 'Account created. Verification code sent to your email.'
+                : 'Account created. Email delivery failed; use the on-screen verification code.',
             'user' => [
                 'id' => $user->id,
                 'name' => $user->name,
@@ -97,7 +106,17 @@ class AuthController extends Controller
                 'is_admin' => false,
                 'permissions' => [],
             ],
-        ], 201);
+        ];
+
+        // For demos / when SMTP is unavailable
+        if (
+            filter_var(env('SHOW_VERIFICATION_CODE', false), FILTER_VALIDATE_BOOLEAN)
+            || !$mailSent
+        ) {
+            $payload['verification_code'] = $code;
+        }
+
+        return response()->json($payload, 201);
     }
 
     public function verifyEmail(Request $request)
@@ -243,19 +262,37 @@ class AuthController extends Controller
             'expires_at' => now()->addMinutes(10),
         ]);
 
-        Mail::raw(
-            "Your ThreatIQ password reset code is: {$code}\n\n"
-            . "This code will expire in 10 minutes.",
-            function ($message) use ($user) {
-                $message
-                    ->to($user->email)
-                    ->subject('ThreatIQ - Password Reset Code');
-            }
-        );
+        $mailSent = true;
 
-        return response()->json([
-            'message' => 'Password reset code sent to your email.',
-        ]);
+        try {
+            Mail::raw(
+                "Your ThreatIQ password reset code is: {$code}\n\n"
+                . "This code will expire in 10 minutes.",
+                function ($message) use ($user) {
+                    $message
+                        ->to($user->email)
+                        ->subject('ThreatIQ - Password Reset Code');
+                }
+            );
+        } catch (\Throwable $e) {
+            report($e);
+            $mailSent = false;
+        }
+
+        $payload = [
+            'message' => $mailSent
+                ? 'Password reset code sent to your email.'
+                : 'Email delivery failed; use the on-screen reset code.',
+        ];
+
+        if (
+            filter_var(env('SHOW_VERIFICATION_CODE', false), FILTER_VALIDATE_BOOLEAN)
+            || !$mailSent
+        ) {
+            $payload['verification_code'] = $code;
+        }
+
+        return response()->json($payload);
     }
 
     public function verifyResetCode(Request $request)
