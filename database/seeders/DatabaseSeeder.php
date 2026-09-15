@@ -15,6 +15,7 @@ class DatabaseSeeder extends Seeder
             NewsSeeder::class,
             DemoUserSeeder::class,
             RealUserSeeder::class,
+            CleanupTestUsersSeeder::class,
         ]);
     }
 }
