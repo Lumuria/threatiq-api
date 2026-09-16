@@ -8,34 +8,61 @@ use App\Models\EmailVerificationCode;
 use App\Models\PasswordResetCode;
 use App\Models\PasswordHistory;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
 
 class AuthController extends Controller
 {
-    private function sendCodeEmailAsync(string $email, string $code, bool $reset = false): void
+    private function sendCodeEmail(string $email, string $code, bool $reset = false): void
     {
-        $php = PHP_BINARY ?: 'php';
-        $artisan = base_path('artisan');
-        $resetFlag = $reset ? ' --reset' : '';
+        $params = [
+            'email' => $email,
+            'code' => $code,
+        ];
 
-        $command = sprintf(
-            '%s %s verification:email %s %s%s > /dev/null 2>&1 &',
-            escapeshellarg($php),
-            escapeshellarg($artisan),
-            escapeshellarg($email),
-            escapeshellarg($code),
-            $resetFlag
+        $exitCode = Artisan::call(
+            'verification:email',
+            $reset
+                ? array_merge($params, ['--reset' => true])
+                : $params
         );
 
-        if (strncasecmp(PHP_OS, 'WIN', 3) === 0) {
-            // Local Windows fallback (non-blocking best-effort)
-            pclose(popen('start /B '.$command, 'r'));
-            return;
+        if ($exitCode !== 0) {
+            throw new \RuntimeException(
+                trim(Artisan::output()) ?: 'Failed to send verification email.'
+            );
         }
+    }
 
-        exec($command);
+    private function sendCodeEmailAsync(string $email, string $code, bool $reset = false): void
+    {
+        try {
+            $this->sendCodeEmail($email, $code, $reset);
+        } catch (\Throwable $e) {
+            // Fallback: fire-and-forget process so request does not hang on SMTP.
+            $php = PHP_BINARY ?: 'php';
+            $artisan = base_path('artisan');
+            $resetFlag = $reset ? ' --reset' : '';
+
+            $command = sprintf(
+                '%s %s verification:email %s %s%s > /dev/null 2>&1 &',
+                escapeshellarg($php),
+                escapeshellarg($artisan),
+                escapeshellarg($email),
+                escapeshellarg($code),
+                $resetFlag
+            );
+
+            if (strncasecmp(PHP_OS, 'WIN', 3) === 0) {
+                pclose(popen('start /B '.$command, 'r'));
+                return;
+            }
+
+            exec($command);
+            report($e);
+        }
     }
 
     public function register(Request $request)
@@ -98,11 +125,22 @@ class AuthController extends Controller
             'expires_at' => now()->addMinutes(10),
         ]);
 
-        // Fire-and-forget email so signup never waits on SMTP.
-        $this->sendCodeEmailAsync($user->email, $code);
+        // Prefer synchronous send via Gmail webhook / Resend so codes stay email-only.
+        try {
+            $this->sendCodeEmail($user->email, $code);
+        } catch (\Throwable $e) {
+            report($e);
+            EmailVerificationCode::where('user_id', $user->id)->delete();
+            $user->tokens()->delete();
+            $user->delete();
 
-        $payload = [
-            'message' => 'Account created. Check your email, or use the on-screen verification code.',
+            return response()->json([
+                'message' => 'Could not send verification email. Please try again later.',
+            ], 503);
+        }
+
+        return response()->json([
+            'message' => 'Account created. Please check your email for the verification code.',
             'user' => [
                 'id' => $user->id,
                 'name' => $user->name,
@@ -113,13 +151,7 @@ class AuthController extends Controller
                 'is_admin' => false,
                 'permissions' => [],
             ],
-        ];
-
-        if (filter_var(env('SHOW_VERIFICATION_CODE', false), FILTER_VALIDATE_BOOLEAN)) {
-            $payload['verification_code'] = $code;
-        }
-
-        return response()->json($payload, 201);
+        ], 201);
     }
 
     public function verifyEmail(Request $request)
@@ -265,17 +297,20 @@ class AuthController extends Controller
             'expires_at' => now()->addMinutes(10),
         ]);
 
-        $this->sendCodeEmailAsync($user->email, $code, true);
+        try {
+            $this->sendCodeEmail($user->email, $code, true);
+        } catch (\Throwable $e) {
+            report($e);
+            PasswordResetCode::where('user_id', $user->id)->delete();
 
-        $payload = [
-            'message' => 'Password reset code sent. Check your email, or use the on-screen code.',
-        ];
-
-        if (filter_var(env('SHOW_VERIFICATION_CODE', false), FILTER_VALIDATE_BOOLEAN)) {
-            $payload['verification_code'] = $code;
+            return response()->json([
+                'message' => 'Could not send reset email. Please try again later.',
+            ], 503);
         }
 
-        return response()->json($payload);
+        return response()->json([
+            'message' => 'Password reset code sent to your email.',
+        ]);
     }
 
     public function verifyResetCode(Request $request)

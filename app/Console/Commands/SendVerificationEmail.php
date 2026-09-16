@@ -30,6 +30,11 @@ class SendVerificationEmail extends Command
             : "Your ThreatIQ verification code is: {$code}\n\nThis code will expire in 10 minutes.";
 
         try {
+            if ($this->sendViaGmailWebhook($email, $subject, $body)) {
+                $this->info('sent-gmail-webhook');
+                return self::SUCCESS;
+            }
+
             if ($this->sendViaResend($email, $subject, $body)) {
                 $this->info('sent-resend');
                 return self::SUCCESS;
@@ -46,6 +51,43 @@ class SendVerificationEmail extends Command
             report($e);
             return self::FAILURE;
         }
+    }
+
+    private function sendViaGmailWebhook(string $email, string $subject, string $body): bool
+    {
+        $webhook = env('MAIL_HTTP_WEBHOOK');
+        $secret = env('MAIL_HTTP_SECRET');
+
+        if (!$webhook || !$secret) {
+            return false;
+        }
+
+        $response = Http::timeout(20)
+            ->acceptJson()
+            ->asJson()
+            ->post($webhook, [
+                'secret' => $secret,
+                'to' => $email,
+                'subject' => $subject,
+                'body' => $body,
+                'fromName' => env('MAIL_FROM_NAME', 'ThreatIQ'),
+                'replyTo' => env('MAIL_REPLY_TO', 'threatiqsy@gmail.com'),
+            ]);
+
+        if (!$response->successful()) {
+            throw new \RuntimeException(
+                'Gmail webhook failed: '.$response->status().' '.$response->body()
+            );
+        }
+
+        $json = $response->json();
+        if (is_array($json) && array_key_exists('ok', $json) && !$json['ok']) {
+            throw new \RuntimeException(
+                'Gmail webhook rejected: '.($json['error'] ?? 'unknown')
+            );
+        }
+
+        return true;
     }
 
     private function sendViaResend(string $email, string $subject, string $body): bool
