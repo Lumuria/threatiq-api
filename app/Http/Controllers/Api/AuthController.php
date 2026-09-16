@@ -395,6 +395,14 @@ class AuthController extends Controller
             ]);
         }
 
+        if ($user->is_active === false) {
+            throw ValidationException::withMessages([
+                'login' => [
+                    'This account has been deactivated by an administrator.'
+                ],
+            ]);
+        }
+
         if (
             !$user->is_admin &&
             !$user->email_verified_at
@@ -482,6 +490,7 @@ class AuthController extends Controller
             'avatar',
             'role',
             'is_admin',
+            'is_active',
             'email_verified_at',
             'created_at'
         )
@@ -498,6 +507,127 @@ class AuthController extends Controller
 
         return response()->json([
             'users' => $users
+        ]);
+    }
+
+    public function updateUser(Request $request, int $id)
+    {
+        $admin = $request->user();
+
+        if (!$admin->is_admin) {
+            return response()->json([
+                'message' => 'Unauthorized.'
+            ], 403);
+        }
+
+        $user = User::findOrFail($id);
+
+        $validated = $request->validate([
+            'is_active' => ['sometimes', 'boolean'],
+            'is_admin' => ['sometimes', 'boolean'],
+            'role' => ['sometimes', 'string', 'in:admin,member'],
+            'email_verified' => ['sometimes', 'boolean'],
+        ]);
+
+        if ($user->id === $admin->id) {
+            if (
+                array_key_exists('is_active', $validated)
+                && $validated['is_active'] === false
+            ) {
+                return response()->json([
+                    'message' => 'You cannot deactivate your own account.'
+                ], 422);
+            }
+
+            if (
+                array_key_exists('is_admin', $validated)
+                && $validated['is_admin'] === false
+            ) {
+                return response()->json([
+                    'message' => 'You cannot remove your own admin role.'
+                ], 422);
+            }
+        }
+
+        if (array_key_exists('is_active', $validated)) {
+            $user->is_active = $validated['is_active'];
+        }
+
+        if (array_key_exists('is_admin', $validated)) {
+            $user->is_admin = $validated['is_admin'];
+            $user->role = $validated['is_admin'] ? 'admin' : 'member';
+        }
+
+        if (array_key_exists('role', $validated) && !array_key_exists('is_admin', $validated)) {
+            $user->role = $validated['role'];
+            $user->is_admin = $validated['role'] === 'admin';
+        }
+
+        if (array_key_exists('email_verified', $validated)) {
+            $user->email_verified_at = $validated['email_verified']
+                ? ($user->email_verified_at ?: now())
+                : null;
+        }
+
+        $user->save();
+
+        if ($user->is_active === false) {
+            $user->tokens()->delete();
+        }
+
+        return response()->json([
+            'message' => 'User updated successfully.',
+            'user' => [
+                'id' => $user->id,
+                'name' => $user->name,
+                'username' => $user->username,
+                'email' => $user->email,
+                'role' => $user->role,
+                'is_admin' => (bool) $user->is_admin,
+                'is_active' => (bool) $user->is_active,
+                'email_verified_at' => $user->email_verified_at,
+                'created_at' => $user->created_at,
+            ],
+        ]);
+    }
+
+    public function deleteUser(Request $request, int $id)
+    {
+        $admin = $request->user();
+
+        if (!$admin->is_admin) {
+            return response()->json([
+                'message' => 'Unauthorized.'
+            ], 403);
+        }
+
+        $user = User::findOrFail($id);
+
+        if ($user->id === $admin->id) {
+            return response()->json([
+                'message' => 'You cannot delete your own account.'
+            ], 422);
+        }
+
+        EmailVerificationCode::where('user_id', $user->id)->delete();
+        PasswordResetCode::where('user_id', $user->id)->delete();
+        $user->tokens()->delete();
+
+        // Soft cleanup of user-owned content relations when present
+        if (method_exists($user, 'likes')) {
+            $user->likes()->delete();
+        }
+        if (method_exists($user, 'comments')) {
+            $user->comments()->delete();
+        }
+        if (method_exists($user, 'posts')) {
+            $user->posts()->delete();
+        }
+
+        $user->delete();
+
+        return response()->json([
+            'message' => 'User deleted successfully.',
         ]);
     }
 
