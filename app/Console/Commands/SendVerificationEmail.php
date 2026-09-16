@@ -56,19 +56,25 @@ class SendVerificationEmail extends Command
             return false;
         }
 
-        $from = env('MAIL_FROM_ADDRESS', 'beth.t@example.com');
+        $from = env('MAIL_FROM_ADDRESS', 'onboarding@resend.dev');
         $fromName = env('MAIL_FROM_NAME', 'ThreatIQ');
+
+        $payload = [
+            'from' => "{$fromName} <{$from}>",
+            'to' => [$email],
+            'subject' => $subject,
+            'text' => $body,
+        ];
+
+        $replyTo = env('MAIL_REPLY_TO');
+        if ($replyTo) {
+            $payload['reply_to'] = $replyTo;
+        }
 
         $response = Http::withToken($apiKey)
             ->acceptJson()
             ->timeout(15)
-            ->post('https://api.resend.com/emails', [
-                'from' => "{$fromName} <{$from}>",
-                'to' => [$email],
-                'subject' => $subject,
-                'text' => $body,
-                'reply_to' => env('MAIL_REPLY_TO', 'threatiqsy@gmail.com'),
-            ]);
+            ->post('https://api.resend.com/emails', $payload);
 
         if (!$response->successful()) {
             throw new \RuntimeException(
